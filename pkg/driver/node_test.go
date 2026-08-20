@@ -31,6 +31,7 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/mock/gomock"
 	"github.com/kubernetes-sigs/aws-efs-csi-driver/pkg/driver/mocks"
+	"github.com/kubernetes-sigs/aws-efs-csi-driver/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -1496,6 +1497,18 @@ func TestIsValidFileSystemId(t *testing.T) {
 		{"invalid: empty", "", false},
 		{"invalid: prefix only", "fs-", false},
 		{"invalid: attack with mount options", "fs-attacktest,exec,suid,dev", false},
+		// DNS-name form (mount-target DNS name) used in static PV volumeHandles.
+		{"valid: dns-name commercial", "fs-9919e11b.efs.us-east-1.amazonaws.com", true},
+		{"valid: dns-name 16-char id", "fs-1234567890abcdef.efs.eu-west-1.amazonaws.com", true},
+		{"valid: dns-name china", "fs-12345678.efs.cn-north-1.amazonaws.com.cn", true},
+		{"valid: dns-name govcloud", "fs-12345678.efs.us-gov-west-1.amazonaws.com", true},
+		{"valid: dns-name fips", "fs-12345678.efs-fips.us-east-1.amazonaws.com", true},
+		{"invalid: dns-name with injected mount options", "fs-12345678.efs.us-east-1.amazonaws.com,exec,suid,dev", false},
+		{"invalid: dns-name id too short", "fs-1234567.efs.us-east-1.amazonaws.com", false},
+		{"invalid: dns-name non-hex id", "fs-1234567G.efs.us-east-1.amazonaws.com", false},
+		{"invalid: dns-name uppercase id", "fs-1234567A.efs.us-east-1.amazonaws.com", false},
+		{"invalid: dns-name unknown domain", "fs-12345678.efs.us-east-1.example.com", false},
+		{"invalid: dns-name missing efs label", "fs-12345678.us-east-1.amazonaws.com", false},
 	}
 
 	for _, tc := range testCases {
@@ -1505,6 +1518,36 @@ func TestIsValidFileSystemId(t *testing.T) {
 				t.Errorf("isValidFileSystemId(%q) = %v, expected %v", tc.fsid, result, tc.expected)
 			}
 		})
+	}
+}
+
+func TestParseVolumeIdDnsName(t *testing.T) {
+	// A DNS-name volumeHandle (used in static PVs) must parse successfully, keep
+	// the fsid byte-for-byte, and produce an unchanged efs-utils mount source.
+	const dnsVolumeId = "fs-9919e11b.efs.us-east-1.amazonaws.com"
+
+	fsid, subpath, apid, fsType, err := parseVolumeId(dnsVolumeId)
+	if err != nil {
+		t.Fatalf("parseVolumeId(%q) returned unexpected error: %v", dnsVolumeId, err)
+	}
+	if fsid != dnsVolumeId {
+		t.Errorf("parseVolumeId(%q) fsid = %q, expected %q (must be unchanged)", dnsVolumeId, fsid, dnsVolumeId)
+	}
+	if apid != "" {
+		t.Errorf("parseVolumeId(%q) apid = %q, expected empty", dnsVolumeId, apid)
+	}
+	if fsType != util.FileSystemTypeEFS {
+		t.Errorf("parseVolumeId(%q) fsType = %q, expected %q", dnsVolumeId, fsType, util.FileSystemTypeEFS)
+	}
+
+	// Mirror the mount source construction in NodePublishVolume (node.go:167).
+	if subpath == "" {
+		subpath = "/"
+	}
+	source := fmt.Sprintf("%s:%s", fsid, subpath)
+	const expectedSource = "fs-9919e11b.efs.us-east-1.amazonaws.com:/"
+	if source != expectedSource {
+		t.Errorf("mount source = %q, expected %q", source, expectedSource)
 	}
 }
 

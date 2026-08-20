@@ -47,6 +47,13 @@ var (
 	volumeIdCounter  = make(map[string]int)
 	supportedFSTypes = []string{util.FileSystemTypeEFS.String(), util.FileSystemTypeS3Files.String(), ""}
 	hexSuffixRegex   = regexp.MustCompile(`^[0-9a-f]{8,40}$`)
+	// dnsFileSystemIdRegex matches the EFS mount-target DNS-name form of a file
+	// system ID (e.g. "fs-9919e11b.efs.us-east-1.amazonaws.com"). The id label
+	// before the first '.' is still validated strictly as fs-[0-9a-f]{8,40}, and
+	// the DNS tail is constrained to a tight DNS charset ([a-z0-9.-]) so it cannot
+	// be used to inject mount options into the mount source. This form is passed
+	// through unchanged to efs-utils, which accepts a full mount-target DNS name.
+	dnsFileSystemIdRegex = regexp.MustCompile(`^fs-[0-9a-f]{8,40}\.efs(-fips)?\.[a-z0-9-]+\.(amazonaws\.com(\.cn)?|c2s\.ic\.gov|sc2s\.sgov\.gov|amazonaws\.eu|cloud\.adc-e\.uk)$`)
 )
 
 const (
@@ -592,7 +599,15 @@ func hasOption(options []string, opt string) bool {
 }
 
 func isValidFileSystemId(filesystemId string) bool {
-	return strings.HasPrefix(filesystemId, "fs-") && hexSuffixRegex.MatchString(filesystemId[3:])
+	// Accept either the bare id (fs-[0-9a-f]{8,40}) or the mount-target DNS-name
+	// form (fs-[0-9a-f]{8,40}.efs.<region>.<partition-domain>). The DNS-name form
+	// is used in static PV volumeHandles and must be passed through unchanged to
+	// efs-utils. Both forms keep the fs-<hex> id portion strictly validated to
+	// prevent mount-option injection.
+	if strings.HasPrefix(filesystemId, "fs-") && hexSuffixRegex.MatchString(filesystemId[3:]) {
+		return true
+	}
+	return dnsFileSystemIdRegex.MatchString(filesystemId)
 }
 
 func isValidAccessPointId(accesspointId string) bool {
